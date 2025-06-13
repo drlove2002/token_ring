@@ -1,391 +1,262 @@
+// Node.java
 package com.app;
 
-import java.awt.*;
+import java.awt.Point;
+import java.awt.Color;
 import java.util.*;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
-import javax.swing.SwingUtilities;
-
-public class Node extends Thread {
+public class Node implements Runnable {
+    private static final AtomicInteger idCounter = new AtomicInteger(0);
+    private static final List<Node> allNodes = Collections.synchronizedList(new ArrayList<>());
+    
+    private final int nodeId;
+    private volatile NodeState state = NodeState.IDLE;
+    private Point position;
+    private final Graph graph;
+    private volatile boolean running = false;
+    private Node nextNode;
+    private boolean isRequesting = false;
+    private ControlToken controlToken = null;
+    
     public enum NodeState {
-        IDLE(new Color(46, 204, 113)),           // Green - not requesting
-        REQUESTING(new Color(241, 196, 15)),     // Yellow - sent request
-        HAS_TOKEN(new Color(52, 152, 219)),      // Blue - has token but not in CS
-        IN_CS(new Color(231, 76, 60));           // Red - in critical section
+        IDLE(Color.GREEN), 
+        REQUESTING(Color.YELLOW), 
+        HAS_TOKEN(Color.BLUE), 
+        IN_CS(Color.RED);
         
         private final Color color;
         NodeState(Color color) { this.color = color; }
         public Color getColor() { return color; }
     }
 
-    private static final AtomicInteger idCounter = new AtomicInteger(0);
-    private static final List<Node> allNodes = Collections.synchronizedList(new ArrayList<>());
-    private static volatile Graph graph = null;
-    private static volatile Token sharedToken = null;
-
-    private final int nodeId;
-    private final Point position;
-    private final AtomicReference<NodeState> currentState = new AtomicReference<>(NodeState.IDLE);
-    private volatile Node nextNode;
-    private volatile boolean hasToken = false;
-    private volatile boolean wantsCS = false;
-    
-    // Add queue for token holder to manage requests
-    private final Queue<Integer> requestQueue = new java.util.concurrent.ConcurrentLinkedQueue<>();
-
-    private Node(Point position) {
-        super("Node-" + idCounter.get());
+    public Node(Graph graph) {
         this.nodeId = idCounter.getAndIncrement();
-        this.position = position;
-        log("Node created at position " + position);
+        this.graph = graph;
+        // Position will be set in recalculatePositions()
+        this.position = new Point(0, 0);
+        System.out.printf("[Node-%d] Created%n", nodeId);
     }
 
-    private void log(String message) {
-        System.out.println(String.format("[Node-%d] %s (State: %s)", 
-            nodeId, message, currentState.get()));
+    public static Node createNode(Graph graph) {
+        synchronized (allNodes) {
+            Node node = new Node(graph);
+            allNodes.add(node);
+            rebuildRing();
+            
+            if (allNodes.size() == 1) {
+                node.controlToken = new ControlToken();
+                node.state = NodeState.HAS_TOKEN;
+                System.out.printf("[Node-%d] Initial control token created%n", node.nodeId);
+            }
+            return node;
+        }
     }
 
-    // Static factory methods
-    public static synchronized Node createNode(Graph graph) {
-        if (Node.graph == null) { 
-            Node.graph = graph; 
-        }
+    private static void rebuildRing() {
+        if (allNodes.isEmpty()) return;
         
-        Point position = calculateRingPosition(allNodes.size());
-        Node node = new Node(position);
-        allNodes.add(node);
-        
-        // Update ring connections
-        updateRingConnections();
-        
-        // Initialize token with first node
-        if (allNodes.size() == 1) {
-            sharedToken = new Token(node.getNodeId());
-            node.receiveToken();
-        }
-        
-        return node;
-    }
-    
-    public static synchronized Node removeLastNode() {
-        if (allNodes.isEmpty()) return null;
-        
-        Node removed = allNodes.remove(allNodes.size() - 1);
-        removed.interrupt();
-        
-        // If removed node had token, pass it to next node
-        if (removed.hasToken && sharedToken != null && !allNodes.isEmpty()) {
-            Node nextInLine = allNodes.get(0); // Give to first available node
-            nextInLine.receiveToken();
-        }
-        
-        // Update ring connections
-        updateRingConnections();
-        
-        if (graph != null) {
-            graph.repaint();
-        }
-        
-        return removed;
-    }
-    
-    public static synchronized void cleanRequestsForNode(int nodeId) {
-        for (Node node : allNodes) {
-            node.requestQueue.remove(nodeId);
-        }
-        if (sharedToken != null) {
-            sharedToken.removeRequest(nodeId);
-        }
-    }
-    
-    private static Point calculateRingPosition(int nodeIndex) {
-        int centerX = 450;
-        int centerY = 325; 
-        int radius = 200;
-        
-        if (allNodes.size() == 0) {
-            return new Point(centerX, centerY - radius);
-        }
-        
-        double angle = (2 * Math.PI * nodeIndex) / Math.max(1, allNodes.size() + 1);
-        int x = (int) (centerX + radius * Math.cos(angle - Math.PI/2));
-        int y = (int) (centerY + radius * Math.sin(angle - Math.PI/2));
-        
-        return new Point(x, y);
-    }
-    
-    private static synchronized void updateRingConnections() {
-        if (allNodes.size() <= 1) return;
-        
+        // Reassign next nodes
         for (int i = 0; i < allNodes.size(); i++) {
-            Node current = allNodes.get(i);
-            Node next = allNodes.get((i + 1) % allNodes.size());
-            current.nextNode = next;
+            allNodes.get(i).nextNode = allNodes.get((i + 1) % allNodes.size());
         }
         
-        // Recalculate positions for better ring distribution
-        for (int i = 0; i < allNodes.size(); i++) {
-            Point newPos = calculateRingPosition(i);
-            allNodes.get(i).position.setLocation(newPos);
+        recalculatePositions();
+    }
+
+    private static void recalculatePositions() {
+        int centerX = 450, centerY = 325, radius = 200;
+        int nodeCount = allNodes.size();
+        
+        for (int i = 0; i < nodeCount; i++) {
+            double angle = 2 * Math.PI * i / nodeCount;
+            allNodes.get(i).position = new Point(
+                centerX + (int)(radius * Math.cos(angle)),
+                centerY + (int)(radius * Math.sin(angle))
+            );
         }
     }
 
-    // Getters
-    public static synchronized List<Node> getAllNodes() {
-        return new ArrayList<>(allNodes);
-    }
-    
-    public static Token getSharedToken() {
-        return sharedToken;
-    }
-    
-    public int getNodeId() { return nodeId; }
-    public Point getPosition() { return new Point(position); }
-    public Color getColor() { return currentState.get().getColor(); }
-    public Node getNextNode() { return nextNode; }
-    public boolean hasToken() { return hasToken; }
-    public int getQueueSize() { return requestQueue.size(); }
-    public Queue<Integer> getQueueCopy() { return new java.util.concurrent.ConcurrentLinkedQueue<>(requestQueue); }
-
-    // Token request propagation
-    public void requestCriticalSection() {
-        if (currentState.get() != NodeState.IDLE) {
-            return; // Already requesting or has token
-        }
-        
-        wantsCS = true;
-        currentState.set(NodeState.REQUESTING);
-        log("Requesting Critical Section - sending token request");
-        
-        if (hasToken) {
-            // We already have the token, enter CS immediately
-            log("Already have token, entering CS immediately");
-            enterCriticalSection();
-        } else {
-            // Send token request around the ring
-            sendTokenRequest(nodeId);
-        }
-        
-        repaintGraph();
-    }
-    
-    // Send token request around the ring
-    private void sendTokenRequest(int requesterId) {
-        if (nextNode != null) {
-            nextNode.receiveTokenRequest(requesterId);
-        }
-    }
-    // Receive and handle token requests
-    public void receiveTokenRequest(int requesterId) {
-        Node current = this;
-        int totalNodes = allNodes.size(); // Get current node count
-        int maxSteps = totalNodes * 2;   // Max 2 full ring rotations
-        int steps = 0;
-        boolean delivered = false;
-
-        while (steps < maxSteps) {
-            steps++;
-            
-            if (current.hasToken) {
-                // Token holder processing
-                if (requesterId != current.nodeId && !current.requestQueue.contains(requesterId)) {
-                    current.requestQueue.offer(requesterId);
-                    current.log("Token holder received request from Node-" + requesterId + 
-                        ". Queue size: " + current.requestQueue.size());
-                    if (sharedToken != null) {
-                        sharedToken.addRequest(requesterId);
-                    }
-                }
-                delivered = true;
-                break;
-            }
-            
-            // Move to next node in ring
-            current = current.nextNode;
-            if (current == null) break;
-        }
-
-        if (!delivered) {
-            log("WARNING: Request for Node-" + requesterId + " not delivered after " + maxSteps + " steps");
+    public void start() {
+        if (!running) {
+            running = true;
+            new Thread(this).start();
+            System.out.printf("[Node-%d] Thread started%n", nodeId);
         }
     }
 
-
-    // Token handling
-    public synchronized void receiveToken() {
-        hasToken = true;
-        if (sharedToken != null) {
-            sharedToken.setCurrentHolder(nodeId);
-        }
-        log("Received token. Current state: " + currentState.get());
-        
-        if (wantsCS) {
-            log("Wants CS - entering Critical Section immediately");
-            enterCriticalSection();
-        } else {
-            currentState.set(NodeState.HAS_TOKEN);
-            log("Has token but not requesting CS. Queue size: " + requestQueue.size());
-            repaintGraph();
-            
-            // Check if there are pending requests
-            if (!requestQueue.isEmpty()) {
-                log("Found pending requests, will pass token");
-                // Small delay to show the HAS_TOKEN state, then pass
-                new Thread(() -> {
-                    try {
-                        Thread.sleep(1000);
-                        if (!isInterrupted() && hasToken && !wantsCS && currentState.get() == NodeState.HAS_TOKEN) {
-                            passTokenToNext();
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }, "TokenCheck-" + nodeId).start();
-            } else {
-                // No pending requests, pass token after delay
-                new Thread(() -> {
-                    try {
-                        Thread.sleep(2000);
-                        if (!isInterrupted() && hasToken && !wantsCS && currentState.get() == NodeState.HAS_TOKEN) {
-                            passTokenToNext();
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }, "TokenPass-" + nodeId).start();
-            }
-        }
-    }
-    
-    private void enterCriticalSection() {
-        currentState.set(NodeState.IN_CS);
-        wantsCS = false;
-        log("ENTERED Critical Section");
-        repaintGraph();
-        
-        // Schedule CS exit
-        new Thread(() -> {
-            try {
-                Thread.sleep(3000 + new Random().nextInt(2000)); // 3-5 seconds
-                if (!isInterrupted()) {
-                    exitCriticalSection();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }, "CS-Timer-" + nodeId).start();
-    }
-    
-    private void exitCriticalSection() {
-        log("EXITING Critical Section. Queue size: " + requestQueue.size());
-        currentState.set(NodeState.HAS_TOKEN);
-        repaintGraph();
-        
-        // Always pass token after exiting CS
-        passTokenToNext();
-    }
-    
-    // Proper token passing logic
-    private synchronized void passTokenToNext() {
-        if (!hasToken) {
-            log("Cannot pass token - don't have it");
-            return;
-        }
-        
-        // Assign nextRequesterId once (making it effectively final)
-        Integer nextRequesterId = requestQueue.isEmpty() ? null : requestQueue.peek();
-        Node targetNode = null;
-        
-        if (nextRequesterId != null) {
-            targetNode = allNodes.stream()
-                .filter(node -> node.getNodeId() == nextRequesterId)
-                .findFirst()
-                .orElse(null);
-            if (targetNode != null) {
-                requestQueue.poll(); // Remove from queue
-                log("Passing token to requester Node-" + nextRequesterId + ". Remaining queue: " + requestQueue.size());
-            }
-        }
-        
-        if (targetNode == null) {
-            targetNode = nextNode;
-            log("No pending requests, passing token to next node: " + (targetNode != null ? targetNode.getNodeId() : "none"));
-        }
-        
-        if (targetNode != null) {
-            final Node finalTarget = targetNode;
-            
-            hasToken = false;
-            currentState.set(NodeState.IDLE);
-            
-            if (nextRequesterId != null && sharedToken != null) {
-                sharedToken.removeRequest(); // Remove from display queue
-            }
-            
-            printQueueStatus();
-            
-            if (graph != null) {
-                graph.animateTokenTransfer(this, finalTarget);
-            }
-            
-            new Thread(() -> {
-                try {
-                    Thread.sleep(1500);
-                    if (!isInterrupted()) {
-                        finalTarget.receiveToken();
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }, "TokenTransfer-" + nodeId).start();
-        } else {
-            log("No valid target node to pass token to");
-        }
-        
-        repaintGraph();
-    }
-    
-    private void printQueueStatus() {
-        System.out.println("=== QUEUE STATUS ===");
-        System.out.println("Token passed from Node-" + nodeId);
-        System.out.println("Remaining requests in queue: " + requestQueue.size());
-        if (!requestQueue.isEmpty()) {
-            System.out.println("Queue contents: " + requestQueue);
-        }
-        System.out.println("==================");
+    public void stop() {
+        running = false;
     }
 
     @Override
     public void run() {
         Random rand = new Random();
-        log("Node thread started");
-        
-        while (!isInterrupted()) {
+        while (running) {
             try {
-                // Variable wait time
-                int waitTime = 8000 + rand.nextInt(7000); // 8-15 seconds
-                Thread.sleep(waitTime);
-                
-                // 40% chance to request CS when idle (increased for more activity)
-                if (currentState.get() == NodeState.IDLE && rand.nextDouble() < 0.40 && !isInterrupted()) {
+                if (state == NodeState.IDLE && rand.nextDouble() < 0.1) {
                     requestCriticalSection();
                 }
                 
+                // Process control token if we have it
+                if (controlToken != null && state == NodeState.HAS_TOKEN) {
+                    processControlToken();
+                }
+                
+                // Shorter sleep for more responsive visualization
+                Thread.sleep(1000 + rand.nextInt(1500));
             } catch (InterruptedException e) {
-                log("Node thread interrupted");
                 Thread.currentThread().interrupt();
                 break;
             }
         }
-        
-        log("Node thread terminated");
+        System.out.printf("[Node-%d] Thread stopped%n", nodeId);
     }
+
+    private void requestCriticalSection() {
+        System.out.printf("[Node-%d] Requesting CS%n", nodeId);
+        state = NodeState.REQUESTING;
+        isRequesting = true;
+        
+        if (controlToken != null) {
+            // We have control token - add directly to queue
+            controlToken.addRequest(nodeId);
+            System.out.printf("[Node-%d] Added request to control token | %s%n", 
+                             nodeId, controlToken);
+        } else {
+            // Create and send request token
+            RequestToken requestToken = new RequestToken(nodeId);
+            System.out.printf("[Node-%d] Created request token | %s%n", 
+                            nodeId, requestToken);
+            nextNode.forwardRequestToken(requestToken);
+        }
+    }
+
+    public void forwardRequestToken(RequestToken requestToken) {
+        System.out.printf("[Node-%d] Received request token | %s%n", 
+                         nodeId, requestToken);
+        
+        if (this.nodeId == requestToken.getOriginNodeId()) {
+            // Request token returned to sender after full circle
+            System.out.printf("[Node-%d] Request token completed full circle | Creating control token%n", 
+                            nodeId);
+            
+            // Create control token if we don't have one
+            if (controlToken == null) {
+                controlToken = new ControlToken();
+                controlToken.addAllRequests(requestToken.getRequests());
+                state = NodeState.HAS_TOKEN;
+                System.out.printf("[Node-%d] Created control token | %s%n", 
+                                nodeId, controlToken);
+            }
+            return;
+        }
+        
+        // Animate request token transfer
+        graph.animateRequestToken(this, nextNode, requestToken, () -> {
+            if (controlToken != null) {
+                // We have control token - merge requests
+                controlToken.addAllRequests(requestToken.getRequests());
+                System.out.printf("[Node-%d] Merged requests into control token | %s%n", 
+                                nodeId, controlToken);
+            } else if (state == NodeState.IN_CS) {
+                // In CS - merge requests
+                controlToken.addAllRequests(requestToken.getRequests());
+                System.out.printf("[Node-%d] Merged requests into control token | %s%n", 
+                                nodeId, controlToken);
+            } else {
+                // Forward request token to next node
+                System.out.printf("[Node-%d] Forwarding request token to Node-%d%n", 
+                                nodeId, nextNode.nodeId);
+                nextNode.forwardRequestToken(requestToken);
+            }
+        });
+    }
+
+    private void processControlToken() {
+        System.out.printf("[Node-%d] Processing control token | %s%n", 
+                         nodeId, controlToken);
+        
+        if (controlToken.hasRequests() && controlToken.peekRequest() == nodeId) {
+            // Our turn to enter CS
+            enterCriticalSection();
+        } else {
+            // Pass control token to next node
+            passControlToken();
+        }
+    }
+
+    private void enterCriticalSection() {
+        System.out.printf("[Node-%d] ENTERING CS | %s%n", 
+                         nodeId, controlToken);
+        state = NodeState.IN_CS;
+        controlToken.removeRequest();  // Remove ourselves from queue
+        
+        try {
+            // Shorter CS duration for better visualization flow
+            Thread.sleep(2000);
+        } catch (InterruptedException e) { 
+            Thread.currentThread().interrupt();
+        } finally {
+            exitCriticalSection();
+        }
+    }
+    private void exitCriticalSection() {
+        System.out.printf("[Node-%d] EXITING CS | %s%n", 
+                         nodeId, controlToken);
+        isRequesting = false;
+        state = NodeState.IDLE;
+        passControlToken();
+    }
+
+    private void passControlToken() {
+        if (nextNode == null) return;
+        
+        System.out.printf("[Node-%d] Passing control token to Node-%d | %s%n", 
+                         nodeId, nextNode.nodeId, controlToken);
+        final ControlToken t = controlToken;
+        controlToken = null;
+        state = isRequesting ? NodeState.REQUESTING : NodeState.IDLE;
+        
+        // Animate token transfer and pass token after animation completes
+        graph.animateControlToken(this, nextNode, () -> {
+            nextNode.receiveControlToken(t);
+        });
+    }
+
+    public synchronized void receiveControlToken(ControlToken token) {
+        System.out.printf("[Node-%d] Received control token | %s%n", 
+                         nodeId, token);
+        this.controlToken = token;
+        state = NodeState.HAS_TOKEN;
+    }
+
+    // Getters
+    public int getNodeId() { return nodeId; }
+    public Color getColor() { return state.getColor(); }
+    public Point getPosition() { return position; }
+    public boolean hasToken() { return controlToken != null; }
+    public NodeState getState() { return state; }
+    public static List<Node> getAllNodes() { return Collections.unmodifiableList(allNodes); }
     
-    private void repaintGraph() {
-        if (graph != null) {
-            SwingUtilities.invokeLater(() -> graph.repaint());
+    public static Node removeLastNode() {
+        synchronized (allNodes) {
+            if (allNodes.isEmpty()) return null;
+            int lastIndex = allNodes.size() - 1;
+            Node removed = allNodes.remove(lastIndex);
+            removed.stop();
+            
+            // Handle token transfer if removed node had token
+            if (removed.controlToken != null && !allNodes.isEmpty()) {
+                // Transfer token to next node in ring
+                Node newHolder = removed.nextNode;
+                newHolder.receiveControlToken(removed.controlToken);
+                System.out.printf("[Node-%d] Control token transferred to Node-%d | %s%n", 
+                                 removed.nodeId, newHolder.nodeId, removed.controlToken);
+            }
+            
+            rebuildRing();
+            return removed;
         }
     }
 }

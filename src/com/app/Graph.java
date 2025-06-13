@@ -1,3 +1,4 @@
+// Graph.java
 package com.app;
 
 import javax.swing.*;
@@ -7,323 +8,210 @@ import java.util.List;
 
 public class Graph extends JPanel {
     private static final long serialVersionUID = 1L;
-    private final Color BACKGROUND_COLOR = new Color(248, 249, 250);
-    private final Color RING_EDGE_COLOR = new Color(149, 165, 166);
-    private final Color TOKEN_COLOR = new Color(255, 215, 0); // Gold
+
     
-    private Point tokenPosition = null;
-    private Node tokenAnimationSource = null;
-    private Node tokenAnimationTarget = null;
-    private Timer animationTimer = null;
+    // Control token animation
+    private Point controlTokenPosition;
+    private Node animControlFrom, animControlTo;
+    private float animControlProgress;
+    private Timer controlTokenTimer;
+    
+    // Request token animation
+    private Point requestTokenPosition;
+    private Node animRequestFrom, animRequestTo;
+    private float animRequestProgress;
+    private Timer requestTokenTimer;
 
     public Graph() {
         setPreferredSize(new Dimension(900, 650));
-        setBackground(BACKGROUND_COLOR);
     }
     
     @Override
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
         Graphics2D g2d = (Graphics2D) g;
-        
-        // Enable high-quality rendering
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-        g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-
+        
+        // Draw ring edges
         drawRingEdges(g2d);
+        
+        // Draw nodes
         drawNodes(g2d);
-        drawToken(g2d);
-        drawLegend(g2d);
-        drawTokenStatus(g2d);
+        
+        // Draw moving control token
+        if (controlTokenPosition != null) {
+            g2d.setColor(Color.ORANGE);
+            g2d.fillOval(controlTokenPosition.x - 10, controlTokenPosition.y - 10, 20, 20);
+            g2d.setColor(Color.BLACK);
+            g2d.drawString("C", controlTokenPosition.x - 3, controlTokenPosition.y + 5);
+        }
+        
+        // Draw moving request token
+        if (requestTokenPosition != null) {
+            g2d.setColor(Color.MAGENTA);
+            g2d.fillOval(requestTokenPosition.x - 10, requestTokenPosition.y - 10, 20, 20);
+            g2d.setColor(Color.BLACK);
+            g2d.drawString("R", requestTokenPosition.x - 3, requestTokenPosition.y + 5);
+        }
     }
 
     private void drawRingEdges(Graphics2D g2d) {
         List<Node> nodes = Node.getAllNodes();
-        if (nodes.size() < 2) return;
-        
-        g2d.setColor(RING_EDGE_COLOR);
-        g2d.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g2d.setColor(Color.GRAY);
+        g2d.setStroke(new BasicStroke(2));
         
         for (int i = 0; i < nodes.size(); i++) {
-            Node node = nodes.get(i);
-            Node next = nodes.get((i + 1) % nodes.size());
-            if (node != null && next != null) {
-                Point from = node.getPosition();
-                Point to = next.getPosition();
-                
-                // Draw edge with arrow
-                drawDirectedEdge(g2d, from, to);
-            }
+            Node from = nodes.get(i);
+            Node to = nodes.get((i + 1) % nodes.size());
+            g2d.drawLine(
+                from.getPosition().x, from.getPosition().y,
+                to.getPosition().x, to.getPosition().y
+            );
+            
+            // Draw arrow
+            drawArrow(g2d, from.getPosition(), to.getPosition());
         }
     }
     
-    private void drawDirectedEdge(Graphics2D g2d, Point from, Point to) {
-        // Calculate edge endpoints (don't draw over nodes)
-        double dx = to.x - from.x;
-        double dy = to.y - from.y;
-        double distance = Math.sqrt(dx * dx + dy * dy);
+    private void drawArrow(Graphics2D g2d, Point from, Point to) {
+        double angle = Math.atan2(to.y - from.y, to.x - from.x);
+        int arrowSize = 10;
+        Point tip = new Point(
+            (int)(to.x - 30 * Math.cos(angle)),
+            (int)(to.y - 30 * Math.sin(angle))
+        );
         
-        if (distance < 70) return;
+        Point arrow1 = new Point(
+            (int)(tip.x - arrowSize * Math.cos(angle - Math.PI/6)),
+            (int)(tip.y - arrowSize * Math.sin(angle - Math.PI/6))
+        );
         
-        double startX = from.x + (dx / distance) * 35;
-        double startY = from.y + (dy / distance) * 35;
-        double endX = to.x - (dx / distance) * 35;
-        double endY = to.y - (dy / distance) * 35;
-        
-        // Draw line
-        g2d.drawLine((int)startX, (int)startY, (int)endX, (int)endY);
-        
-        // Draw small arrowhead
-        double arrowLength = 10;
-        double arrowAngle = Math.PI / 6;
-        double angle = Math.atan2(dy, dx);
-        
-        int arrowX1 = (int)(endX - arrowLength * Math.cos(angle - arrowAngle));
-        int arrowY1 = (int)(endY - arrowLength * Math.sin(angle - arrowAngle));
-        int arrowX2 = (int)(endX - arrowLength * Math.cos(angle + arrowAngle));
-        int arrowY2 = (int)(endY - arrowLength * Math.sin(angle + arrowAngle));
+        Point arrow2 = new Point(
+            (int)(tip.x - arrowSize * Math.cos(angle + Math.PI/6)),
+            (int)(tip.y - arrowSize * Math.sin(angle + Math.PI/6))
+        );
         
         g2d.fillPolygon(
-            new int[]{(int)endX, arrowX1, arrowX2},
-            new int[]{(int)endY, arrowY1, arrowY2},
+            new int[]{tip.x, arrow1.x, arrow2.x},
+            new int[]{tip.y, arrow1.y, arrow2.y},
             3
         );
     }
 
     private void drawNodes(Graphics2D g2d) {
-        g2d.setFont(new Font("Segoe UI", Font.BOLD, 16));
-        
         for (Node node : Node.getAllNodes()) {
-            if (node == null) continue;
             Point pos = node.getPosition();
-            Color nodeColor = node.getColor();
-            
-            // Draw shadow
-            g2d.setColor(new Color(0, 0, 0, 30));
-            g2d.fillOval(pos.x - 32, pos.y - 28, 64, 64);
+            Color color = node.getColor();
             
             // Draw node
-            g2d.setColor(nodeColor);
-            g2d.fillOval(pos.x - 30, pos.y - 30, 60, 60);
+            g2d.setColor(color);
+            g2d.fillOval(pos.x - 20, pos.y - 20, 40, 40);
             
-            // Add highlight if has token
-            if (node.hasToken()) {
-                g2d.setColor(TOKEN_COLOR);
-                g2d.setStroke(new BasicStroke(4, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                g2d.drawOval(pos.x - 33, pos.y - 33, 66, 66);
+            // Highlight if in CS
+            if (node.getState() == Node.NodeState.IN_CS) {
+                g2d.setColor(Color.BLACK);
+                g2d.setStroke(new BasicStroke(3));
+                g2d.drawOval(pos.x - 24, pos.y - 24, 48, 48);
             }
             
-            // Node border
-            g2d.setColor(nodeColor.darker());
-            g2d.setStroke(new BasicStroke(2));
-            g2d.drawOval(pos.x - 30, pos.y - 30, 60, 60);
+            // Outline for token holder
+            if (node.hasToken()) {
+                g2d.setColor(Color.ORANGE);
+                g2d.setStroke(new BasicStroke(2));
+                g2d.drawOval(pos.x - 22, pos.y - 22, 44, 44);
+            }
             
-            // Node ID
-            String id = String.valueOf(node.getNodeId());
-            FontMetrics fm = g2d.getFontMetrics();
-            int textWidth = fm.stringWidth(id);
-            int textHeight = fm.getAscent();
-            
-            g2d.setColor(Color.WHITE);
-            g2d.drawString(id, pos.x - textWidth / 2, pos.y + textHeight / 4);
-        }
-    }
-    
-    private void drawToken(Graphics2D g2d) {
-        if (tokenPosition != null) {
-            // Draw animated token
-            g2d.setColor(TOKEN_COLOR);
-            g2d.fillOval(tokenPosition.x - 15, tokenPosition.y - 15, 30, 30);
-            g2d.setColor(TOKEN_COLOR.darker());
-            g2d.setStroke(new BasicStroke(2));
-            g2d.drawOval(tokenPosition.x - 15, tokenPosition.y - 15, 30, 30);
-            
-            // Token label
+            // Draw node ID
             g2d.setColor(Color.BLACK);
-            g2d.setFont(new Font("Segoe UI", Font.BOLD, 10));
-            g2d.drawString("T", tokenPosition.x - 4, tokenPosition.y + 4);
+            g2d.drawString(String.valueOf(node.getNodeId()), pos.x - 5, pos.y + 5);
         }
     }
 
-    private void drawLegend(Graphics2D g2d) {
-        int x = 15, y = 25;
+    public void animateControlToken(Node from, Node to, Runnable onFinish) {
+        animControlFrom = from;
+        animControlTo = to;
+        animControlProgress = 0;
         
-        // Background
-        g2d.setColor(new Color(255, 255, 255, 220));
-        g2d.fillRoundRect(x - 10, y - 15, 220, 140, 10, 10);
-        g2d.setColor(new Color(189, 195, 199));
-        g2d.setStroke(new BasicStroke(1));
-        g2d.drawRoundRect(x - 10, y - 15, 220, 140, 10, 10);
-        
-        g2d.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        g2d.setColor(new Color(44, 62, 80));
-        g2d.drawString("Ring Token Algorithm", x, y);
-        y += 25;
-        
-        g2d.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        
-        // Node states
-        for (Node.NodeState state : Node.NodeState.values()) {
-            g2d.setColor(state.getColor());
-            g2d.fillOval(x, y - 10, 16, 16);
-            g2d.setColor(state.getColor().darker());
-            g2d.drawOval(x, y - 10, 16, 16);
-            
-            g2d.setColor(new Color(44, 62, 80));
-            String stateName = state.name().replace("_", " ");
-            g2d.drawString(stateName, x + 25, y);
-            y += 18;
+        if (controlTokenTimer != null) {
+            controlTokenTimer.stop();
         }
         
-        y += 5;
-        g2d.setColor(TOKEN_COLOR);
-        g2d.fillOval(x, y - 10, 16, 16);
-        g2d.setColor(TOKEN_COLOR.darker());
-        g2d.drawOval(x, y - 10, 16, 16);
-        g2d.setColor(new Color(44, 62, 80));
-        g2d.drawString("Token Holder", x + 25, y);
-    }
-    
-    private void drawTokenStatus(Graphics2D g2d) {
-        Token token = Node.getSharedToken();
-        if (token == null) return;
-        
-        List<Node> nodes = Node.getAllNodes();
-        Node tokenHolder = nodes.stream()
-            .filter(Node::hasToken)
-            .findFirst()
-            .orElse(null);
-        
-        int x = getWidth() - 220;
-        int y = 25;
-        
-        // Background
-        g2d.setColor(new Color(255, 255, 255, 220));
-        g2d.fillRoundRect(x - 10, y - 15, 210, 140, 10, 10);
-        g2d.setColor(new Color(189, 195, 199));
-        g2d.setStroke(new BasicStroke(1));
-        g2d.drawRoundRect(x - 10, y - 15, 210, 140, 10, 10);
-        
-        g2d.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        g2d.setColor(new Color(44, 62, 80));
-        g2d.drawString("Token Status", x, y);
-        y += 25;
-        
-        g2d.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        g2d.drawString("Current Holder: Node-" + token.getCurrentHolder(), x, y);
-        y += 18;
-        
-        // Show actual queue from token holder
-        int actualQueueSize = tokenHolder != null ? tokenHolder.getQueueSize() : 0;
-        g2d.drawString("Queue Size: " + actualQueueSize, x, y);
-        y += 18;
-        g2d.drawString("Total Nodes: " + nodes.size(), x, y);
-        y += 18;
-        
-        // Queue contents from actual token holder
-        if (tokenHolder != null && tokenHolder.getQueueSize() > 0) {
-            g2d.drawString("Queue: " + tokenHolder.getQueueCopy().toString(), x, y);
-        } else {
-            g2d.drawString("Queue: Empty", x, y);
-        }
-        y += 18;
-        
-        // Show requesting nodes
-        long requestingCount = nodes.stream()
-            .filter(node -> node.getColor().equals(Node.NodeState.REQUESTING.getColor()))
-            .count();
-        g2d.drawString("Requesting: " + requestingCount + " nodes", x, y);
-    }
-
-    // Animation methods
-    public void animateTokenTransfer(Node from, Node to) {
-        if (animationTimer != null && animationTimer.isRunning()) {
-            animationTimer.stop();
-        }
-        
-        if (from == null || to == null) {
-            tokenPosition = null;
-            return;
-        }
-        
-        tokenAnimationSource = from;
-        tokenAnimationTarget = to;
-        tokenPosition = new Point(from.getPosition());
-        
-        animationTimer = new Timer(50, e -> updateTokenAnimation());
-        animationTimer.start();
-    }
-    
-    private void updateTokenAnimation() {
-        if (tokenAnimationSource == null || tokenAnimationTarget == null) {
-            if (animationTimer != null) animationTimer.stop();
-            return;
-        }
-
-        Point end = tokenAnimationTarget.getPosition();
-        double dx = end.x - tokenPosition.x;
-        double dy = end.y - tokenPosition.y;
-        double remainingDistance = Math.sqrt(dx * dx + dy * dy);
-
-        if (remainingDistance < 1) {
-            tokenPosition = null;
-            tokenAnimationSource = null;
-            tokenAnimationTarget = null;
-            if (animationTimer != null) animationTimer.stop();
-        } else {
-            double step = Math.min(8.0, remainingDistance / 10);
-            double moveX = (dx / remainingDistance) * step;
-            double moveY = (dy / remainingDistance) * step;
-
-            tokenPosition.x += (int) moveX;
-            tokenPosition.y += (int) moveY;
-        }
-
-        repaint();
-    }
-
-    // Control methods
-    void addNode(ActionEvent e) {
-        if (Node.getAllNodes().size() >= 10) {
-            JOptionPane.showMessageDialog(
-                this,
-                "Maximum number of nodes (10) reached for optimal ring visualization!",
-                "Node Limit Reached",
-                JOptionPane.WARNING_MESSAGE
-            );
-            return;
-        }
-        
-        System.out.println("=== Adding new ring node ===");
-        Node newNode = Node.createNode(this);
-        if (newNode != null) {
-            newNode.start();
+        controlTokenTimer = new Timer(20, e -> {
+            animControlProgress += 0.05;
+            if (animControlProgress >= 1) {
+                controlTokenTimer.stop();
+                controlTokenPosition = null;
+                if (onFinish != null) {
+                    onFinish.run();
+                }
+            } else {
+                Point fromPos = animControlFrom.getPosition();
+                Point toPos = animControlTo.getPosition();
+                controlTokenPosition = new Point(
+                    (int) (fromPos.x + (toPos.x - fromPos.x) * animControlProgress),
+                    (int) (fromPos.y + (toPos.y - fromPos.y) * animControlProgress)
+                );
+            }
             repaint();
-            System.out.println("Ring Node " + newNode.getNodeId() + " added and started");
+        });
+        controlTokenPosition = from.getPosition();
+        controlTokenTimer.start();
+    }
+    
+    public void animateRequestToken(Node from, Node to, RequestToken token, Runnable onFinish) {
+        animRequestFrom = from;
+        animRequestTo = to;
+        animRequestProgress = 0;
+        
+        if (requestTokenTimer != null) {
+            requestTokenTimer.stop();
+        }
+        
+        requestTokenTimer = new Timer(20, e -> {
+            animRequestProgress += 0.05;
+            if (animRequestProgress >= 1) {
+                requestTokenTimer.stop();
+                requestTokenPosition = null;
+                if (onFinish != null) {
+                    onFinish.run();
+                }
+            } else {
+                Point fromPos = animRequestFrom.getPosition();
+                Point toPos = animRequestTo.getPosition();
+                requestTokenPosition = new Point(
+                    (int) (fromPos.x + (toPos.x - fromPos.x) * animRequestProgress),
+                    (int) (fromPos.y + (toPos.y - fromPos.y) * animRequestProgress)
+                );
+            }
+            repaint();
+        });
+        requestTokenPosition = from.getPosition();
+        requestTokenTimer.start();
+    }
+
+    void addNode(ActionEvent e) {
+        synchronized (Node.getAllNodes()) {
+            if (Node.getAllNodes().size() >= 10) {
+                JOptionPane.showMessageDialog(this, "Max 10 nodes allowed!");
+                return;
+            }
+            Node node = Node.createNode(this);
+            node.start();
+            repaint();
         }
     }
 
     void removeNode(ActionEvent e) {
-        List<Node> nodes = Node.getAllNodes();
-        if (nodes.isEmpty()) {
-            JOptionPane.showMessageDialog(
-                this,
-                "No nodes available to remove!",
-                "No Nodes",
-                JOptionPane.INFORMATION_MESSAGE
-            );
-            return;
-        }
-        
-        System.out.println("=== Removing ring node ===");
-        Node removed = Node.removeLastNode();
-        if (removed != null) {
-            // Clean up any requests for the removed node
-            Node.cleanRequestsForNode(removed.getNodeId());
-            
-            repaint();
-            System.out.println("Ring Node " + removed.getNodeId() + " removed");
+        synchronized (Node.getAllNodes()) {
+            List<Node> nodes = Node.getAllNodes();
+            if (nodes.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "No nodes to remove!");
+                return;
+            }
+            Node removed = Node.removeLastNode();
+            if (removed != null) {
+                repaint();
+            }
         }
     }
 }
